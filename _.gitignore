@@ -1,0 +1,11 @@
+# Fichiers de session R / RStudio
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# macOS
+.DS_Store
+
+# Données téléchargées par le script (re-générées à chaque exécution)
+data/
