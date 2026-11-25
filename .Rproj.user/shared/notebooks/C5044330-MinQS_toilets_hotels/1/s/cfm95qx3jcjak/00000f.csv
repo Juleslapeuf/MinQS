@@ -1,0 +1,7 @@
+"0","folder <- ""data"""
+"0","dir.create(folder, showWarnings = FALSE, recursive = TRUE)"
+"0",""
+"0","file_toilets <- file.path(folder, ""toilets_amsterdam.geojson"")"
+"0","file_districts    <- file.path(folder, ""wijken_amsterdam.geojson"")"
+"0","file_airbnb    <- file.path(folder, ""airbnb_amsterdam_listings.csv"")"
+"0","file_hotels    <- file.path(folder, ""tourism_amsterdam.geojson"")"

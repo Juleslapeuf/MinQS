@@ -31,6 +31,8 @@ file_hotels    <- file.path(folder, "tourism_amsterdam.geojson")
 A CELUI QUI DECRIRA LES DONNEES : Pour airbnb elles viennent de ce site internet https://insideairbnb.com/fr/
 Les autres viennent de openstreetmap pour les toilettes et quartiers
 
+Pour les données des hôtels elles viennent de ce site (il faut faire une requête overpass) : https://overpass-turbo.eu/
+
 ```{r}
 url_airbnb <- paste0(
   "https://data.insideairbnb.com/the-netherlands/north-holland/amsterdam/",

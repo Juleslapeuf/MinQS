@@ -1,0 +1,10 @@
+# Fichiers de session R / RStudio
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# macOS
+.DS_Store
+
+*.geojson
