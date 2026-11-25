@@ -7,5 +7,4 @@
 # macOS
 .DS_Store
 
-# Données téléchargées par le script (re-générées à chaque exécution)
-data/
+.geojson
