@@ -1,5 +1,0 @@
-"0","districts <- st_read(file_districts, quiet = TRUE)"
-"0","toilets <- st_read(file_toilets, quiet = TRUE)"
-"0","airbnb <- read.csv(file_airbnb, stringsAsFactors = FALSE, encoding = ""UTF-8"")"
-"0","crs_metric <- 28992"
-"0","hotels <- st_read(file_hotels, quiet = TRUE)"

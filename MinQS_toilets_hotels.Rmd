@@ -10,8 +10,9 @@ output: html_document
 #| warning: false
 library(sf)
 library(ggplot2)
-library(osmdata)
+#library(osmdata)
 library(tidyverse)
+library(MASS)
 ```
 
 # DATA
@@ -22,16 +23,37 @@ folder <- "data"
 dir.create(folder, showWarnings = FALSE, recursive = TRUE)
 
 file_toilets <- file.path(folder, "toilets_amsterdam.geojson")
-file_districts    <- file.path(folder, "wijken_amsterdam.geojson")
-file_airbnb    <- file.path(folder, "airbnb_amsterdam_listings.csv")
-file_hotels    <- file.path(folder, "tourism_amsterdam.geojson")
+file_districts_with_water <- file.path(folder, "districts_with_water_amsterdam.geojson")
+file_districts <- file.path(folder, "districts_amsterdam.geojson")
+file_airbnb <- file.path(folder, "airbnb_amsterdam_listings.csv")
+file_hotels <- file.path(folder, "tourism_amsterdam.geojson")
+file_licences <- file.path(folder, "horeca_licences.geojson")
 ```
 
+```{r}
+# Parameters
+crs_metric <- 28992
+taille_page <- 5000
+options(timeout = 180)
+```
 
-A CELUI QUI DECRIRA LES DONNEES : Pour airbnb elles viennent de ce site internet https://insideairbnb.com/fr/
+Les éléments pour le rendu
+
+2.1 DEFINING BOUNDARIES : La ville d'Amsterdam (qui est particulière avec les canaux et la discontinuité) + Des quartiers (aller voir comment ils sont découpés)
+2.3 CHLOROPLETH MAP : Idéal pour voir une variable quantitative
+3.2 GEOCODING : Ici les codes de positions sont très bien renseignés (format point) donc pas besoin de modifier quelque chose
+3.3 SYMBOLOGY BASED ON ATTRIBUTES : La carte des toilettes selon qu'ils soient ouverts ou non
+3.3 HEAT MAPS : Pour les airbnb on utilise cette carte
+3.4 SPATIAL JOIN : Pas besoin de cette partie
+3.5 EXPORT MAPS : Pas nécessaire non plus
+4.2 CONSTRUCTING GEOMETRY : Les polygones peuvent avoir des formes différentes
+
+A CELUI/CELLE QUI DECRIRA LES DONNEES : Pour airbnb elles viennent de ce site internet https://insideairbnb.com/fr/
 Les autres viennent de openstreetmap pour les toilettes et quartiers
 
 Pour les données des hôtels elles viennent de ce site (il faut faire une requête overpass) : https://overpass-turbo.eu/
+
+Pour les cafés, bar et restaurants : https://api.data.amsterdam.nl/v1/wfs/horeca/
 
 ```{r}
 url_airbnb <- paste0(
@@ -45,6 +67,23 @@ url_toilets <- paste0(
 url_districts <- paste0(
     "https://maps.amsterdam.nl/open_geodata/geojson_lnglat.php",
     "?KAARTLAAG=INDELING_WIJK_EXWATER&THEMA=gebiedsindeling")
+
+url_districts_with_water <- paste0(
+    "https://maps.amsterdam.nl/open_geodata/geojson_lnglat.php",
+    "?KAARTLAAG=INDELING_WIJK&THEMA=gebiedsindeling")
+
+# Function to construct url for licences
+url_wfs <- function(couche, debut, nb) {
+  paste0(
+    "https://api.data.amsterdam.nl/v1/wfs/horeca/v1",
+    "?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature",
+    "&COUNT=", nb,
+    "&STARTINDEX=", debut,
+    "&TYPENAMES=app:", couche,
+    "&OUTPUTFORMAT=application/json",
+    "&SRSNAME=EPSG:4326"
+  )
+}
 ```
 
 ```{r}
@@ -56,12 +95,56 @@ download <- function(url, destination) {
     }
   )
 }
+
+# Special function for licences
+download_wfs <- function(couche, destination, nb = taille_page) {
+  pages <- list()
+  for (p in 1:20) {
+    tmp <- tempfile(fileext = ".geojson")
+    download(url_wfs(couche, (p - 1) * nb, nb), tmp)
+    page <- st_read(tmp, quiet = TRUE, int64_as_string = TRUE)
+    st_crs(page) <- 4326
+    unlink(tmp)
+    if (nrow(page) == 0) break
+    pages[[p]] <- page
+    cat("Page", p, ":", nrow(page), "objets\n")
+    if (nrow(page) < nb) break
+  }
+  resultat <- do.call(rbind, pages)
+  st_write(resultat, destination, delete_dsn = TRUE, quiet = TRUE)
+}
 ```
+
 
 ```{r}
 download(url_airbnb, file_airbnb)
 download(url_toilets, file_toilets)
+download(url_districts_with_water, file_districts_with_water)
 download(url_districts, file_districts)
+download_wfs("exploitatievergunning", file_licences)
+```
+
+```{r}
+load_water <- function(districts, dossier = "data") {
+  fichier <- file.path(dossier, "districts_with_water_amsterdam.geojson")
+
+  complet <- st_read(fichier, quiet = TRUE)
+  if (is.na(st_crs(complet))) st_crs(complet) <- 4326
+
+  complet <- st_transform(st_make_valid(complet), st_crs(districts))
+  districts <- st_make_valid(districts)
+
+  eau <- st_difference(
+    st_union(st_geometry(complet)),
+    st_union(st_geometry(districts))
+  )
+
+  st_sf(geometry = eau)
+}
+
+add_water <- function(water) {
+  geom_sf(data = water, fill = "#bcd7ea", color = NA)
+}
 ```
 
 ## I get them in the environment
@@ -70,14 +153,14 @@ download(url_districts, file_districts)
 districts <- st_read(file_districts, quiet = TRUE)
 toilets <- st_read(file_toilets, quiet = TRUE)
 airbnb <- read.csv(file_airbnb, stringsAsFactors = FALSE, encoding = "UTF-8")
-crs_metric <- 28992
 hotels <- st_read(file_hotels, quiet = TRUE)
+licences <- st_read(file_licences, quiet = TRUE)
 ```
-
 
 ## Data processing
 
 ```{r}
+## FONCTIONS
 # Cette fonction matche le point (airbnb, hotel, toilette) avec un quartier
 match <- function(points, zones) {
   idx <- st_within(points, zones)
@@ -85,78 +168,86 @@ match <- function(points, zones) {
 }
 
 # Nombre de points par quartier
-compter <- function(district_id) {
+count_point <- function(district_id) {
   tabulate(district_id[!is.na(district_id)], nbins = nrow(districts))
-}
-
-# Distance (m) de chaque point à l'élément le plus proche de `cible`
-distance_plus_proche <- function(points, cible) {
-  i <- st_nearest_feature(points, cible)
-  as.numeric(st_distance(points, cible[i, ], by_element = TRUE))
 }
 ```
 
 
 ```{r}
-# For the district dataset
-districts <- st_transform(districts, crs_metric)
+# DISTRICTS
+districts <- st_transform(districts, crs_metric) %>%
+  dplyr::select(Wijk, geometry)
 districts$surface_km2 <- as.numeric(st_area(districts)) / 1e6
+districts$district_id <- seq_len(nrow(districts))
 
-# For the toilet dataset
-names(toilets) <- c("type", "cost", "opening_days",
-                      "schedules", "location", "picture", "categorie",
-                      "geometry")
+water <- load_water(districts)
 
+# TOILETS
 coords <- st_coordinates(toilets)
 toilets <- toilets[which(coords[, "X"] != 0 & coords[, "Y"] != 0), ]
-toilets <- st_transform(toilets, crs_metric)
+toilets <- st_transform(toilets, crs_metric) %>%
+  dplyr::select(Openingstijden, geometry)
 toilets$district_id <- match(toilets, districts)
+toilets$open_24h <- grepl("\\b24\\b", toilets$Openingstijden, perl = TRUE) # Toilets 24/7 availability
 
-# For the hotel dataset
+# HOTELS
 hotels <- st_transform(hotels, crs_metric) %>%
-  select(id, name, geometry)
+  dplyr::select(id, name, geometry)
 hotels$district_id <- match(hotels, districts)
 
-# For the airbnb dataset
+# AIRBNB
 airbnb <- st_as_sf(airbnb, coords = c("longitude", "latitude"), crs = 4326)
-airbnb <- st_transform(airbnb, crs_metric)
+airbnb <- st_transform(airbnb, crs_metric) %>%
+  dplyr::select(id, room_type, geometry)
 airbnb$district_id <- match(airbnb, districts)
+
+# LICENCES
+licences <- licences %>%
+  st_transform(crs_metric) %>%
+  filter(!is.na(st_is_empty(geometry)), !st_is_empty(geometry)) %>%
+  st_make_valid() %>%
+  st_point_on_surface() %>%
+  dplyr::select(id, zaak_categorie, geometry)
+
+categories_to_drop <- c("Zalenverhuur", "Eethuis", "Hotel", "Nachtzaak", "Onbekend")
+licences <- licences %>%
+  filter(!zaak_categorie %in% categories_to_drop)
+
+licences$district_id <- match(licences, districts)
+
+licences <- licences %>%
+  mutate(
+    classe = case_when(
+      zaak_categorie %in% c(
+        "Restaurant", "Fastfood", "Mengformule", "Restaurant met zaalverhuur"
+      ) ~ "restaurant_snack",
+      zaak_categorie %in% c(
+        "Café", "Alcoholvrij", "Coffeeshop", "Café met zaalverhuur",
+        "Sociëteit", "Culturele horeca", "Additionele horeca"
+      ) ~ "cafe_bar",
+      TRUE ~ NA_character_))
 ```
 
 # Analysis
 
 ```{r}
 # --- Districts overview ------------------------------------
-districts$n_hotels    <- compter(hotels$district_id)
-districts$n_airbnb    <- compter(airbnb$district_id)
-districts$n_toilets <- compter(toilets$district_id)
+districts$n_hotels    <- count_point(hotels$district_id)
+districts$n_airbnb    <- count_point(airbnb$district_id)
+districts$n_toilets <- count_point(toilets$district_id)
+districts$n_horeca <- count_point(licences$district_id)
+districts$n_restaurant_snack <- count_point(licences$district_id[licences$classe == "restaurant_snack"])
+districts$n_cafe_bar <- count_point(licences$district_id[licences$classe == "cafe_bar"])
 
 districts$hotels_km2    <- districts$n_hotels    / districts$surface_km2
 districts$airbnb_km2    <- districts$n_airbnb    / districts$surface_km2
 districts$toilets_km2 <- districts$n_toilets / districts$surface_km2
-districts$hotels_par_toilette <- ifelse(districts$n_toilets > 0,
-                                     districts$n_hotels / districts$n_toilets, NA)
-
-# Lien hôtels <-> toilettes : distance à la toilette la plus proche
-hotels$dist_toilette_m <- distance_plus_proche(hotels, toilets)
-airbnb$dist_toilette_m <- distance_plus_proche(airbnb, toilets)
-
-par_wijk <- function(valeurs, district_id, fonction) {
-  as.numeric(tapply(valeurs, factor(district_id, levels = seq_len(nrow(districts))),
-                    fonction))
-}
-districts$dist_med_hotel_m    <- par_wijk(hotels$dist_toilette_m, hotels$district_id, median)
-districts$part_hotels_proches <- par_wijk(hotels$dist_toilette_m <= 300,
-                                       hotels$district_id, mean)
-districts$dist_med_airbnb_m   <- par_wijk(airbnb$dist_toilette_m, airbnb$district_id, median)
-
-cat("\nDistance médiane hôtel -> toilette la plus proche :",
-    round(median(hotels$dist_toilette_m)), "m\n")
-cat("Part des hôtels à moins de", 300, "m d'une toilette :",
-    round(100 * mean(hotels$dist_toilette_m <= 300)), "%\n")
-cat("Corrélation de Spearman hôtels/km2 ~ toilets/km2 :",
-    round(cor(districts$hotels_km2, districts$toilets_km2, method = "spearman"), 2), "\n")
+districts$horeca_km2 <- districts$n_horeca / districts$surface_km2
+districts$restaurant_km2 <- districts$n_restaurant_snack / districts$surface_km2
+districts$cafe_bar_km2 <- districts$n_cafe_bar / districts$surface_km2
 ```
+
 
 ```{r}
 # --- Cartes ------------------------------------------------------
@@ -168,37 +259,35 @@ echelle <- function(nom) {
   do.call(scale_fill_viridis_c, args)
 }
 
-# Carte 1 : densité d'hôtels + toilets
+# Carte 1 : toilets
 carte1 <- ggplot() +
-  geom_sf(data = districts, aes(fill = hotels_km2), color = "white", linewidth = 0.2) +
-  geom_sf(data = toilets, color = "#1b6ca8", size = 0.7, alpha = 0.8) +
-  echelle("Hôtels / km²") +
-  labs(title = "Densité d'hôtels et toilettes publiques – Amsterdam",
-       subtitle = "Points bleus : toilettes publiques",
-       caption = "Hôtels : © OpenStreetMap contributors · Toilettes : Gemeente Amsterdam") +
+  add_water(water) +
+  geom_sf(data = districts, fill = "grey95", color = "grey70", linewidth = 0.2) +
+  geom_sf(data = toilets, aes(color = open_24h), size = 1.5, alpha = 0.8) +
+  scale_color_manual(
+    values = c("TRUE" = "#d95f02", "FALSE" = "#1b9e77"),
+    labels = c("TRUE" = "24/7", "FALSE" = "Limited access"),
+    name = NULL
+  ) +
+  labs(title = "Public Toilets – Amsterdam") +
   theme_minimal()
 
-# Carte 2 : densité d'annonces Airbnb
+# Carte 2 : hotel density + toilets
 carte2 <- ggplot() +
+  add_water(water) +
+  geom_sf(data = districts, aes(fill = hotels_km2), color = "white", linewidth = 0.2) +
+  geom_sf(data = toilets, color = "#1b6ca8", size = 0.9, alpha = 0.8) +
+  echelle("Hôtels / km²") +
+  labs(title = "Hotel density and public toilets – Amsterdam",
+       subtitle = "Blue point : Public toilet") +
+  theme_minimal()
+
+# Carte 3 : densité d'annonces Airbnb
+carte3 <- ggplot() +
+  add_water(water) +
   geom_sf(data = districts, aes(fill = airbnb_km2), color = "white", linewidth = 0.2) +
   echelle("Annonces / km²") +
-  labs(title = "Densité d'annonces Airbnb – Amsterdam",
-       caption = "Inside Airbnb (CC BY 4.0)") +
-  theme_minimal()
-
-# Carte 3 : hôtels selon la distance à la toilette publique la plus proche
-hotels$classe_dist <- cut(hotels$dist_toilette_m,
-                          breaks = c(-Inf, 150, 300, 500, Inf),
-                          labels = c("< 150 m", paste0("150 – ", 300, " m"),
-                                     paste0(300, " – 500 m"), "> 500 m"))
-carte3 <- ggplot() +
-  geom_sf(data = districts, fill = "grey95", color = "grey75", linewidth = 0.2) +
-  geom_sf(data = toilets, shape = 17, color = "grey20", size = 0.9) +
-  geom_sf(data = hotels, aes(color = classe_dist), size = 1.4) +
-  scale_color_viridis_d(name = "Distance à la\ntoilette la plus proche",
-                        option = "plasma", end = 0.9) +
-  labs(title = "Hôtels et accès aux toilettes publiques",
-       subtitle = "Triangles gris : toilettes publiques") +
+  labs(title = "AirBnB listings density – Amsterdam") +
   theme_minimal()
 
 print(carte1)
@@ -206,5 +295,89 @@ print(carte2)
 print(carte3)
 ```
 
+```{r}
+# HORECA MAP
+ggplot() +
+  add_water(water) +
+  geom_sf(
+    data = districts,
+    fill = "grey96",
+    color = "grey75",
+    linewidth = 0.2
+  ) +
+  geom_sf(
+    data = licences,
+    aes(color = classe),
+    size = 0.4,
+    alpha = 0.6
+  ) +
+  scale_color_manual(
+    name = "Type",
+    values = c(
+      restaurant_snack = "#e07b00",
+      cafe_bar = "#1b6ca8",
+      autre = "grey60"
+    )
+  ) +
+  guides(
+    color = guide_legend(
+      override.aes = list(size = 2, alpha = 1)
+    )
+  ) +
+  labs(
+    title = "Horeca à Amsterdam"
+  ) +
+  theme_minimal()
+```
 
 
+
+```{r}
+ggplot() +
+  add_water(water) +
+  geom_sf(data = districts,
+          fill = "lightgray",
+          size = 0.02,
+          color = "white"
+          ) +
+  geom_sf(data = airbnb, 
+          color = "red",    
+          size = 0.4,       
+          alpha = 0.4
+          ) +
+  geom_sf(data = hotels, 
+          color = "blue",    
+          size = 0.4,       
+          alpha = 0.7
+          ) +
+  geom_sf(data = licences,
+          color = "green",
+          size = 0.4,
+          alpha = 0.5) +
+  theme_void() +
+  labs(title = "AirBnB, Hotels and Restaurants/Cafés in Amsterdam")
+```
+
+
+```{r}
+# Extract coordinates from the sf object
+coords <- st_coordinates(airbnb)
+
+# Calculate KDE based on coordinates
+kde <- kde2d(coords[, 1], coords[, 2], n = 500) # n specifies the number of grids
+
+# Convert KDE to raster format
+kde_df <- expand.grid(x = kde$x, y = kde$y)
+kde_df$z <- as.vector(kde$z)
+
+# Heat map
+ggplot() +
+  geom_raster(data = kde_df, 
+              aes(x = x, y = y, fill = z), 
+              alpha = 1) +  # Kernel density heat map
+  geom_sf(data = districts, fill = NA, color = "black") +
+  add_water(water) +
+  scale_fill_gradientn(colors = c("transparent", "lightpink", "red", "darkred"), name = "Density") +
+  theme_void() +
+  labs(title = "Heat Map of AirBnB in Amsterdam")
+```
