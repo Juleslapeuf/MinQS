@@ -6,11 +6,11 @@ output: html_document
 ---
 
 ```{r}
+# Packages
 #| message: false
 #| warning: false
 library(sf)
 library(ggplot2)
-#library(osmdata)
 library(tidyverse)
 library(MASS)
 ```
@@ -19,6 +19,7 @@ library(MASS)
 ## I download the data
 
 ```{r}
+# Creating file path to dowload the data
 folder <- "data"
 dir.create(folder, showWarnings = FALSE, recursive = TRUE)
 
@@ -46,7 +47,7 @@ Les éléments pour le rendu
 3.3 HEAT MAPS : Pour les airbnb on utilise cette carte
 3.4 SPATIAL JOIN : Pas besoin de cette partie
 3.5 EXPORT MAPS : Pas nécessaire non plus
-4.2 CONSTRUCTING GEOMETRY : Les polygones peuvent avoir des formes différentes
+4.2 CONSTRUCTING GEOMETRY : Pas nécessaire non plus
 
 A CELUI/CELLE QUI DECRIRA LES DONNEES : Pour airbnb elles viennent de ce site internet https://insideairbnb.com/fr/
 Les autres viennent de openstreetmap pour les toilettes et quartiers
@@ -56,6 +57,7 @@ Pour les données des hôtels elles viennent de ce site (il faut faire une requ�
 Pour les cafés, bar et restaurants : https://api.data.amsterdam.nl/v1/wfs/horeca/
 
 ```{r}
+# Pasting the urls to download the data
 url_airbnb <- paste0(
   "https://data.insideairbnb.com/the-netherlands/north-holland/amsterdam/",
   "2026-09-16/visualisations/listings.csv")
@@ -87,6 +89,7 @@ url_wfs <- function(couche, debut, nb) {
 ```
 
 ```{r}
+# Set of functions to download the data based on url and path destination
 download <- function(url, destination) {
   tryCatch(
     download.file(url, destfile = destination, mode = "wb", quiet = TRUE),
@@ -117,6 +120,7 @@ download_wfs <- function(couche, destination, nb = taille_page) {
 
 
 ```{r}
+# Downloading
 download(url_airbnb, file_airbnb)
 download(url_toilets, file_toilets)
 download(url_districts_with_water, file_districts_with_water)
@@ -125,6 +129,7 @@ download_wfs("exploitatievergunning", file_licences)
 ```
 
 ```{r}
+# Two functions to add water layer to the map
 load_water <- function(districts, dossier = "data") {
   fichier <- file.path(dossier, "districts_with_water_amsterdam.geojson")
 
@@ -150,6 +155,7 @@ add_water <- function(water) {
 ## I get them in the environment
 
 ```{r}
+# Datasets in the environment
 districts <- st_read(file_districts, quiet = TRUE)
 toilets <- st_read(file_toilets, quiet = TRUE)
 airbnb <- read.csv(file_airbnb, stringsAsFactors = FALSE, encoding = "UTF-8")
@@ -160,14 +166,14 @@ licences <- st_read(file_licences, quiet = TRUE)
 ## Data processing
 
 ```{r}
-## FONCTIONS
-# Cette fonction matche le point (airbnb, hotel, toilette) avec un quartier
+## Two Functions to create new variables
+# This function matches the point (toilet, hotel...) with the district it is in
 match <- function(points, zones) {
   idx <- st_within(points, zones)
   vapply(idx, function(i) if (length(i) > 0) i[1] else NA_integer_, integer(1))
 }
 
-# Nombre de points par quartier
+# This functions aggregates the nb of points per district
 count_point <- function(district_id) {
   tabulate(district_id[!is.na(district_id)], nbins = nrow(districts))
 }
@@ -175,6 +181,7 @@ count_point <- function(district_id) {
 
 
 ```{r}
+# A little bit of data processing
 # DISTRICTS
 districts <- st_transform(districts, crs_metric) %>%
   dplyr::select(Wijk, geometry)
@@ -210,12 +217,14 @@ licences <- licences %>%
   st_point_on_surface() %>%
   dplyr::select(id, zaak_categorie, geometry)
 
+# Filter some categories : for example night clubs
 categories_to_drop <- c("Zalenverhuur", "Eethuis", "Hotel", "Nachtzaak", "Onbekend")
 licences <- licences %>%
   filter(!zaak_categorie %in% categories_to_drop)
 
 licences$district_id <- match(licences, districts)
 
+# 2 classes typology
 licences <- licences %>%
   mutate(
     classe = case_when(
@@ -229,7 +238,7 @@ licences <- licences %>%
       TRUE ~ NA_character_))
 ```
 
-# Analysis
+## New variables
 
 ```{r}
 # --- Districts overview ------------------------------------
@@ -248,22 +257,24 @@ districts$restaurant_km2 <- districts$n_restaurant_snack / districts$surface_km2
 districts$cafe_bar_km2 <- districts$n_cafe_bar / districts$surface_km2
 ```
 
+# MAPS
 
 ```{r}
-# --- Cartes ------------------------------------------------------
-# Échelle de couleurs en racine carrée (les densités sont très asymétriques).
-# L'argument s'appelle `transform` depuis ggplot2 3.5.0, `trans` avant.
+# Square root transformation for better visualization
 echelle <- function(nom) {
   args <- list(name = nom, option = "magma", direction = -1, na.value = "grey90")
   if (packageVersion("ggplot2") >= "3.5.0") args$transform <- "sqrt" else args$trans <- "sqrt"
   do.call(scale_fill_viridis_c, args)
 }
+```
 
-# Carte 1 : toilets
-carte1 <- ggplot() +
+
+```{r}
+# Toilets
+ggplot() +
   add_water(water) +
   geom_sf(data = districts, fill = "grey95", color = "grey70", linewidth = 0.2) +
-  geom_sf(data = toilets, aes(color = open_24h), size = 1.5, alpha = 0.8) +
+  geom_sf(data = toilets, aes(color = open_24h), size = 1, alpha = 0.8) +
   scale_color_manual(
     values = c("TRUE" = "#d95f02", "FALSE" = "#1b9e77"),
     labels = c("TRUE" = "24/7", "FALSE" = "Limited access"),
@@ -271,69 +282,26 @@ carte1 <- ggplot() +
   ) +
   labs(title = "Public Toilets – Amsterdam") +
   theme_minimal()
-
-# Carte 2 : hotel density + toilets
-carte2 <- ggplot() +
-  add_water(water) +
-  geom_sf(data = districts, aes(fill = hotels_km2), color = "white", linewidth = 0.2) +
-  geom_sf(data = toilets, color = "#1b6ca8", size = 0.9, alpha = 0.8) +
-  echelle("Hôtels / km²") +
-  labs(title = "Hotel density and public toilets – Amsterdam",
-       subtitle = "Blue point : Public toilet") +
-  theme_minimal()
-
-# Carte 3 : densité d'annonces Airbnb
-carte3 <- ggplot() +
-  add_water(water) +
-  geom_sf(data = districts, aes(fill = airbnb_km2), color = "white", linewidth = 0.2) +
-  echelle("Annonces / km²") +
-  labs(title = "AirBnB listings density – Amsterdam") +
-  theme_minimal()
-
-print(carte1)
-print(carte2)
-print(carte3)
 ```
 
 ```{r}
-# HORECA MAP
-ggplot() +
-  add_water(water) +
-  geom_sf(
-    data = districts,
-    fill = "grey96",
-    color = "grey75",
-    linewidth = 0.2
-  ) +
-  geom_sf(
-    data = licences,
-    aes(color = classe),
-    size = 0.4,
-    alpha = 0.6
-  ) +
-  scale_color_manual(
-    name = "Type",
-    values = c(
-      restaurant_snack = "#e07b00",
-      cafe_bar = "#1b6ca8",
-      autre = "grey60"
-    )
-  ) +
-  guides(
-    color = guide_legend(
-      override.aes = list(size = 2, alpha = 1)
-    )
-  ) +
-  labs(
-    title = "Horeca à Amsterdam"
-  ) +
-  theme_minimal()
+# Extract coordinates from the sf object
+coords_bnb <- st_coordinates(airbnb)
+
+# Calculate KDE based on coordinates
+kde_bnb <- kde2d(coords_bnb[, 1], coords_bnb[, 2], n = 500) # n specifies the number of grids
+
+# Convert KDE to raster format
+kde_bnb_df <- expand.grid(x = kde_bnb$x, y = kde_bnb$y)
+kde_bnb_df$z <- as.vector(kde_bnb$z)
+
+# Create neighborhood centroids : The same for all the maps
+amsterdam_centroids <- st_centroid(districts)
 ```
 
-
-
 ```{r}
-ggplot() +
+# Maps for AirBnB Visualization
+map1_bnb <- ggplot() +
   add_water(water) +
   geom_sf(data = districts,
           fill = "lightgray",
@@ -344,40 +312,289 @@ ggplot() +
           color = "red",    
           size = 0.4,       
           alpha = 0.4
-          ) +
-  geom_sf(data = hotels, 
-          color = "blue",    
-          size = 0.4,       
-          alpha = 0.7
-          ) +
-  geom_sf(data = licences,
-          color = "green",
-          size = 0.4,
-          alpha = 0.5) +
-  theme_void() +
-  labs(title = "AirBnB, Hotels and Restaurants/Cafés in Amsterdam")
-```
+          ) + 
+  theme_void()
 
-
-```{r}
-# Extract coordinates from the sf object
-coords <- st_coordinates(airbnb)
-
-# Calculate KDE based on coordinates
-kde <- kde2d(coords[, 1], coords[, 2], n = 500) # n specifies the number of grids
-
-# Convert KDE to raster format
-kde_df <- expand.grid(x = kde$x, y = kde$y)
-kde_df$z <- as.vector(kde$z)
-
-# Heat map
-ggplot() +
-  geom_raster(data = kde_df, 
+map2_bnb <- ggplot() +
+  geom_raster(data = kde_bnb_df, 
               aes(x = x, y = y, fill = z), 
               alpha = 1) +  # Kernel density heat map
   geom_sf(data = districts, fill = NA, color = "black") +
   add_water(water) +
   scale_fill_gradientn(colors = c("transparent", "lightpink", "red", "darkred"), name = "Density") +
   theme_void() +
-  labs(title = "Heat Map of AirBnB in Amsterdam")
+  theme(legend.position = "none")
+
+map3_bnb <- ggplot() +
+  add_water(water) +
+  geom_sf(data = districts, aes(fill = airbnb_km2), color = "white", linewidth = 0.2) +
+  echelle("Annonces / km²") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+map4_bnb <- ggplot() +
+  add_water(water) +
+  geom_sf(data = districts,
+          fill = "lightgray",
+          linewidth = 0.2,
+          color = "white") +
+  geom_sf(data = amsterdam_centroids,
+          aes(size = n_airbnb),
+          color = "red",
+          alpha = 0.6) +
+  scale_size_area(max_size = 5) +
+  theme_void() +
+  theme(legend.position = "none")
+
+combined_bnb <- ggpubr::ggarrange(map1_bnb, map2_bnb, map3_bnb, map4_bnb, nrow=2, ncol=2,
+                  labels = c("Point Map", "Heat Map", "Choropleth Map", "PropSymbol Map"))
+
+print(combined_bnb)
 ```
+
+```{r}
+# Extract coordinates from the sf object
+coords_hot <- st_coordinates(hotels)
+
+# Calculate KDE based on coordinates
+kde_hot <- kde2d(coords_hot[, 1], coords_hot[, 2], n = 500) # n specifies the number of grids
+
+# Convert KDE to raster format
+kde_hot_df <- expand.grid(x = kde_hot$x, y = kde_hot$y)
+kde_hot_df$z <- as.vector(kde_hot$z)
+```
+
+
+```{r}
+# Maps for Hotels Visualization
+map1_hot <- ggplot() +
+  add_water(water) +
+  geom_sf(data = districts,
+          fill = "lightgray",
+          size = 0.02,
+          color = "white"
+          ) +
+  geom_sf(data = hotels, 
+          color = "red",    
+          size = 0.4,       
+          alpha = 0.4
+          ) + 
+  theme_void()
+
+map2_hot <- ggplot() +
+  geom_raster(data = kde_hot_df, 
+              aes(x = x, y = y, fill = z), 
+              alpha = 1) +  # Kernel density heat map
+  geom_sf(data = districts, fill = NA, color = "black") +
+  add_water(water) +
+  scale_fill_gradientn(colors = c("transparent", "lightpink", "red", "darkred"), name = "Density") +
+  theme_void() +
+  theme(legend.position = "none")
+
+map3_hot <- ggplot() +
+  add_water(water) +
+  geom_sf(data = districts, aes(fill = hotels_km2), color = "white", linewidth = 0.2) +
+  echelle("Annonces / km²") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+map4_hot <- ggplot() +
+  add_water(water) +
+  geom_sf(data = districts,
+          fill = "lightgray",
+          linewidth = 0.2,
+          color = "white") +
+  geom_sf(data = amsterdam_centroids,
+          aes(size = n_hotels),
+          color = "red",
+          alpha = 0.6) +
+  scale_size_area(max_size = 5) +
+  theme_void() +
+  theme(legend.position = "none")
+
+combined_hot <- ggpubr::ggarrange(map1_hot, map2_hot, map3_hot, map4_hot, nrow=2, ncol=2,
+                  labels = c("Point Map", "Heat Map", "Choropleth Map", "PropSymbol Map"))
+
+print(combined_hot)
+```
+
+```{r}
+# Extract coordinates from the sf object
+coords_lic <- st_coordinates(licences)
+
+# Calculate KDE based on coordinates
+kde_lic <- kde2d(coords_lic[, 1], coords_lic[, 2], n = 500) # n specifies the number of grids
+
+# Convert KDE to raster format
+kde_lic_df <- expand.grid(x = kde_lic$x, y = kde_lic$y)
+kde_lic_df$z <- as.vector(kde_lic$z)
+```
+
+
+```{r}
+# Maps for Licences Visualization
+map1_lic <- ggplot() +
+  add_water(water) +
+  geom_sf(data = districts,
+          fill = "lightgray",
+          size = 0.02,
+          color = "white"
+          ) +
+  geom_sf(data = licences, 
+          color = "red",    
+          size = 0.4,       
+          alpha = 0.4
+          ) + 
+  theme_void()
+
+map2_lic <- ggplot() +
+  geom_raster(data = kde_lic_df, 
+              aes(x = x, y = y, fill = z), 
+              alpha = 1) +  # Kernel density heat map
+  geom_sf(data = districts, fill = NA, color = "black") +
+  add_water(water) +
+  scale_fill_gradientn(colors = c("transparent", "lightpink", "red", "darkred"), name = "Density") +
+  theme_void() +
+  theme(legend.position = "none")
+
+map3_lic <- ggplot() +
+  add_water(water) +
+  geom_sf(data = districts, aes(fill = horeca_km2), color = "white", linewidth = 0.2) +
+  echelle("Annonces / km²") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+map4_lic <- ggplot() +
+  add_water(water) +
+  geom_sf(data = districts,
+          fill = "lightgray",
+          linewidth = 0.2,
+          color = "white") +
+  geom_sf(data = amsterdam_centroids,
+          aes(size = n_horeca),
+          color = "red",
+          alpha = 0.6) +
+  scale_size_area(max_size = 5) +
+  theme_void() +
+  theme(legend.position = "none")
+
+combined_lic <- ggpubr::ggarrange(map1_lic, map2_lic, map3_lic, map4_lic, nrow=2, ncol=2,
+                  labels = c("Point Map", "Heat Map", "Choropleth Map", "PropSymbol Map"))
+
+print(combined_lic)
+```
+
+```{r}
+ggplot() +
+  add_water(water) +
+  geom_sf(data = districts,
+          fill = "lightgray",
+          size = 0.02,
+          color = "white") +
+  geom_sf(data = airbnb,
+          aes(color = "Airbnb"),
+          size = 0.4,
+          alpha = 0.4) +
+  geom_sf(data = hotels,
+          aes(color = "Hotels"),
+          size = 0.6,
+          alpha = 0.7) +
+  geom_sf(data = licences,
+          aes(color = "Restaurants and cafés"),
+          size = 0.4,
+          alpha = 0.5) +
+  scale_color_manual(
+    name = "Tourist facilities",
+    values = c(
+      "Airbnb" = "red",
+      "Hotels" = "blue",
+      "Restaurants and cafés" = "green"
+    )
+  ) +
+  theme_void() +
+  labs(title = "AirBnB, Hotels, Restaurants and Cafés - Amsterdam")
+```
+
+
+```{r}
+
+# Carte 2 : hotel density + toilets
+ggplot() +
+  geom_raster(data = kde_hot_df, 
+              aes(x = x, y = y, fill = z), 
+              alpha = 1) +  # Kernel density heat map
+  geom_sf(data = districts, fill = NA, color = "black") +
+  geom_sf(data = toilets, color = "blue", size = 1) +
+  add_water(water) +
+  scale_fill_gradientn(colors = c("transparent", "lightpink", "red", "darkred"), name = "Density") +
+  theme_void() +
+  theme(legend.position = "none") +
+  labs(title = "Hotel density and public toilet locations - Amsterdam")
+
+```
+
+```{r}
+# --- Relative ranking -------------------------------------
+districts <- districts %>%
+  mutate(
+    rank_horeca = rank(-horeca_km2, ties.method = "min"),
+    rank_hotels = rank(-hotels_km2, ties.method = "min"),
+    rank_airbnb = rank(-airbnb_km2, ties.method = "min"),
+    score = rank_horeca + rank_hotels + rank_airbnb
+  )
+
+
+centroids_toilets <- amsterdam_centroids %>%
+  dplyr::filter(n_toilets > 0)
+
+centroids_zero <- amsterdam_centroids %>%
+  dplyr::filter(n_toilets == 0)
+```
+
+```{r}
+carte_classement <- ggplot() +
+  add_water(water) +
+  geom_sf(
+    data = districts,
+    aes(fill = score),
+    color = "white",
+    linewidth = 0.2
+  ) +
+  geom_sf(
+    data = centroids_toilets,
+    aes(size = n_toilets),
+    shape = 21,
+    fill = "white",
+    color = "black",
+    alpha = 0.8
+  ) +
+  geom_sf(
+    data = centroids_zero,
+    shape = 4,
+    size = 3,
+    color = "red",
+    stroke = 1.2
+  ) +
+  scale_fill_viridis_c(
+    option = "magma",
+    direction = -1,
+    name = "Ranking"
+  ) +
+  scale_size_area(
+    max_size = 10,
+    name = "Toilets"
+  ) +
+  labs(
+    title = "Relative ranking of districts based on tourist facilities",
+    subtitle = "Hotels, restaurants, cafes and airbnb",
+    caption = "Red crosses are districts with no public toilet"
+  ) +
+  theme_void() +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(face = "bold")
+  )
+
+print(carte_classement)
+```
+
